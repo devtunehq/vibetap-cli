@@ -1660,6 +1660,7 @@ dependencies = [
  "colored",
  "dirs",
  "indicatif",
+ "reqwest",
  "serde",
  "serde_json",
  "tokio",

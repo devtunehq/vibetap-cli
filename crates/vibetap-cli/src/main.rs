@@ -17,6 +17,9 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Manage authentication with VibeTap
+    Auth(commands::auth::AuthArgs),
+
     /// Initialize VibeTap in the current repository
     Init(commands::init::InitArgs),
 
@@ -57,6 +60,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     match cli.command {
+        Commands::Auth(args) => commands::auth::execute(args).await,
         Commands::Init(args) => commands::init::execute(args).await,
         Commands::Watch(args) => commands::watch::execute(args).await,
         Commands::Now(args) => commands::now::execute(args).await,

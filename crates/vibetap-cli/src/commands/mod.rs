@@ -1,4 +1,5 @@
 pub mod apply;
+pub mod auth;
 pub mod hush;
 pub mod init;
 pub mod now;
