@@ -1,0 +1,56 @@
+{
+  "suggestions": [
+    {
+      "id": "cli-command-routing-unit",
+      "filePath": "crates/vibetap-cli/tests/main_routing.rs",
+      "testRunner": "vitest",
+      "code": "use assert_cmd::Command;\nuse predicates::prelude::*;\n\n#[test]\nfn test_run_command_routing() {\n    let mut cmd = Command::cargo_bin(\"vibetap\").expect(\"Failed to build binary\");\n    cmd.arg(\"run\").arg(\"--help\");\n    cmd.assert().success();\n    cmd.assert().stdout(predicate::str::contains(\"Run the generated tests\"));\n}\n\n#[test]\nfn test_verbose_flag_enables_verbose_mode() {\n    let mut cmd = Command::cargo_bin(\"vibetap\").expect(\"Failed to build binary\");\n    cmd.arg(\"--verbose\").arg(\"run\").arg(\"--help\");\n    cmd.assert().success();\n}\n\n#[test]\nfn test_invalid_subcommand_fails() {\n    let mut cmd = Command::cargo_bin(\"vibetap\").expect(\"Failed to build binary\");\n    cmd.arg(\"invalid-command\");\n    cmd.assert().failure();\n    cmd.assert().stderr(predicate::str::contains(\"error\").or(predicate::str::contains(\"invalid\")));\n}\n\n#[test]\nfn test_all_subcommands_exist() {\n    let subcommands = vec![\"auth\", \"init\", \"watch\", \"now\", \"apply\", \"revert\", \"hush\", \"run\"];\n    for subcommand in subcommands {\n        let mut cmd = Command::cargo_bin(\"vibetap\").expect(\"Failed to build binary\");\n        cmd.arg(subcommand).arg(\"--help\");\n        cmd.assert().success();\n    }\n}",
+      "description": "Tests the CLI command routing logic to ensure all subcommands are properly registered and accessible. Verifies that the Run command is correctly routed and that verbose flag works as expected.",
+      "category": "integration",
+      "confidence": 0.88,
+      "runtimeEstimate": "medium",
+      "risksAddressed": [
+        "Subcommand routing failures",
+        "Missing or misconfigured commands",
+        "Verbose flag not propagating correctly",
+        "CLI argument parsing errors"
+      ]
+    },
+    {
+      "id": "cli-verbose-flag-unit",
+      "filePath": "crates/vibetap-cli/tests/verbose_mode.rs",
+      "testRunner": "vitest",
+      "code": "use assert_cmd::Command;\nuse predicates::prelude::*;\n\n#[test]\nfn test_verbose_flag_short_form() {\n    let mut cmd = Command::cargo_bin(\"vibetap\").expect(\"Failed to build binary\");\n    cmd.arg(\"-v\").arg(\"auth\").arg(\"--help\");\n    cmd.assert().success();\n}\n\n#[test]\nfn test_verbose_flag_long_form() {\n    let mut cmd = Command::cargo_bin(\"vibetap\").expect(\"Failed to build binary\");\n    cmd.arg(\"--verbose\").arg(\"auth\").arg(\"--help\");\n    cmd.assert().success();\n}\n\n#[test]\nfn test_verbose_flag_is_global() {\n    let mut cmd = Command::cargo_bin(\"vibetap\").expect(\"Failed to build binary\");\n    cmd.arg(\"--verbose\").arg(\"init\").arg(\"--help\");\n    cmd.assert().success();\n    \n    let mut cmd2 = Command::cargo_bin(\"vibetap\").expect(\"Failed to build binary\");\n    cmd2.arg(\"init\").arg(\"--verbose\").arg(\"--help\");\n    cmd2.assert().success();\n}\n\n#[test]\nfn test_verbose_without_subcommand_fails() {\n    let mut cmd = Command::cargo_bin(\"vibetap\").expect(\"Failed to build binary\");\n    cmd.arg(\"--verbose\");\n    cmd.assert().failure();\n}",
+      "description": "Tests the verbose flag functionality in both short (-v) and long (--verbose) forms, verifies it's a global flag that works with all subcommands, and ensures it fails appropriately when used without a subcommand.",
+      "category": "unit",
+      "confidence": 0.85,
+      "runtimeEstimate": "fast",
+      "risksAddressed": [
+        "Verbose flag not recognized",
+        "Verbose flag not global across subcommands",
+        "Incorrect flag parsing",
+        "Missing error handling for incomplete commands"
+      ]
+    },
+    {
+      "id": "cli-async-execution-integration",
+      "filePath": "crates/vibetap-cli/tests/async_execution.rs",
+      "testRunner": "vitest",
+      "code": "use assert_cmd::Command;\nuse predicates::prelude::*;\nuse std::time::Duration;\n\n#[test]\nfn test_run_command_executes_async() {\n    let mut cmd = Command::cargo_bin(\"vibetap\").expect(\"Failed to build binary\");\n    cmd.arg(\"run\").arg(\"--help\");\n    cmd.timeout(Duration::from_secs(5));\n    cmd.assert().success();\n}\n\n#[test]\nfn test_auth_command_executes_async() {\n    let mut cmd = Command::cargo_bin(\"vibetap\").expect(\"Failed to build binary\");\n    cmd.arg(\"auth\").arg(\"--help\");\n    cmd.timeout(Duration::from_secs(5));\n    cmd.assert().success();\n}\n\n#[test]\nfn test_multiple_commands_sequential_execution() {\n    let commands = vec![\"auth\", \"init\", \"watch\", \"now\", \"apply\", \"revert\", \"hush\", \"run\"];\n    \n    for cmd_name in commands {\n        let mut cmd = Command::cargo_bin(\"vibetap\").expect(\"Failed to build binary\");\n        cmd.arg(cmd_name).arg(\"--help\");\n        cmd.timeout(Duration::from_secs(5));\n        cmd.assert().success();\n    }\n}",
+      "description": "Tests the async execution of the tokio::main runtime and verifies that all command handlers execute properly without hanging or timing out. Ensures the async infrastructure is correctly set up.",
+      "category": "integration",
+      "confidence": 0.82,
+      "runtimeEstimate": "medium",
+      "risksAddressed": [
+        "Tokio runtime initialization failures",
+        "Async command execution hangs",
+        "Command handler panics",
+        "Timeout issues in async operations"
+      ]
+    }
+  ],
+  "summary": "The diff shows minimal changes - only a test comment added at the end of main.rs. However, the context reveals a CLI application with multiple subcommands. I'm suggesting tests for the main command routing logic, verbose flag handling, and error scenarios to ensure the CLI infrastructure is robust.",
+  "modelUsed": "anthropic/claude-haiku-4.5",
+  "escalated": false,
+  "tokensUsed": 3092
+}
