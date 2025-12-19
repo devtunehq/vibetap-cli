@@ -40,6 +40,9 @@ enum Commands {
 
     /// Run the generated tests
     Run(commands::run::RunArgs),
+
+    /// Manage git pre-commit hooks
+    Hook(commands::hook::HookArgs),
 }
 
 #[tokio::main]
@@ -68,6 +71,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::Revert(args) => commands::revert::execute(args).await,
         Commands::Hush(args) => commands::hush::execute(args).await,
         Commands::Run(args) => commands::run::execute(args).await,
+        Commands::Hook(args) => commands::hook::execute(args).await,
     }
 }
 // test comment

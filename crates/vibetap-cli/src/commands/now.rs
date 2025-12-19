@@ -46,6 +46,10 @@ pub struct NowArgs {
     /// Test runner to use (vitest, jest, pytest, etc.)
     #[arg(long)]
     test_runner: Option<String>,
+
+    /// Quiet mode - show condensed output (useful for git hooks)
+    #[arg(short, long)]
+    quiet: bool,
 }
 
 pub async fn execute(args: NowArgs) -> anyhow::Result<()> {
@@ -54,29 +58,39 @@ pub async fn execute(args: NowArgs) -> anyhow::Result<()> {
     let access_token = config.get_valid_access_token().await?;
     let api_url = config.api_url().to_string();
 
+    let quiet = args.quiet;
+
     // Get the diff based on scope
     let diff = if args.uncommitted {
-        println!("{}", "Analyzing uncommitted changes...".cyan());
+        if !quiet {
+            println!("{}", "Analyzing uncommitted changes...".cyan());
+        }
         get_uncommitted_diff()
     } else {
-        println!("{}", "Analyzing staged changes...".cyan());
+        if !quiet {
+            println!("{}", "Analyzing staged changes...".cyan());
+        }
         get_staged_diff()
     };
 
     let diff = match diff {
         Ok(d) => d,
         Err(GitError::NoStagedChanges) => {
-            println!(
-                "\n{}",
-                "No changes found. Stage some changes first with 'git add'.".yellow()
-            );
+            if !quiet {
+                println!(
+                    "\n{}",
+                    "No changes found. Stage some changes first with 'git add'.".yellow()
+                );
+            }
             return Ok(());
         }
         Err(GitError::NotARepo) => {
-            println!(
-                "\n{}",
-                "Not a git repository. Run this command from within a git repo.".red()
-            );
+            if !quiet {
+                println!(
+                    "\n{}",
+                    "Not a git repository. Run this command from within a git repo.".red()
+                );
+            }
             return Ok(());
         }
         Err(e) => {
@@ -84,21 +98,28 @@ pub async fn execute(args: NowArgs) -> anyhow::Result<()> {
         }
     };
 
-    println!(
-        "  Found {} in {} file(s)",
-        format!("{} hunk(s)", diff.hunks.len()).green(),
-        diff.files_changed.len()
-    );
+    if !quiet {
+        println!(
+            "  Found {} in {} file(s)",
+            format!("{} hunk(s)", diff.hunks.len()).green(),
+            diff.files_changed.len()
+        );
+    }
 
-    // Show progress spinner
-    let spinner = ProgressBar::new_spinner();
-    spinner.set_style(
-        ProgressStyle::default_spinner()
-            .template("{spinner:.cyan} {msg}")
-            .unwrap(),
-    );
-    spinner.set_message("Generating test suggestions...");
-    spinner.enable_steady_tick(Duration::from_millis(100));
+    // Show progress spinner (only in non-quiet mode)
+    let spinner = if !quiet {
+        let s = ProgressBar::new_spinner();
+        s.set_style(
+            ProgressStyle::default_spinner()
+                .template("{spinner:.cyan} {msg}")
+                .unwrap(),
+        );
+        s.set_message("Generating test suggestions...");
+        s.enable_steady_tick(Duration::from_millis(100));
+        Some(s)
+    } else {
+        None
+    };
 
     // Build the API request
     let request = build_request(&diff, &args, &config);
@@ -108,20 +129,53 @@ pub async fn execute(args: NowArgs) -> anyhow::Result<()> {
     let response = match client.generate(request).await {
         Ok(r) => r,
         Err(e) => {
-            spinner.finish_and_clear();
-            println!("\n{} {}", "Error:".red(), e);
+            if let Some(s) = spinner {
+                s.finish_and_clear();
+            }
+            if !quiet {
+                println!("\n{} {}", "Error:".red(), e);
+            }
             return Ok(());
         }
     };
 
-    spinner.finish_and_clear();
+    if let Some(s) = spinner {
+        s.finish_and_clear();
+    }
 
     // Save suggestions for later use by apply command (with source file hashes)
     if let Err(e) = save_suggestions(&response, &diff.files_changed) {
-        eprintln!("{} {}", "Warning: Could not save suggestions:".yellow(), e);
+        if !quiet {
+            eprintln!("{} {}", "Warning: Could not save suggestions:".yellow(), e);
+        }
     }
 
-    // Display results
+    // Quiet mode: show condensed output
+    if quiet {
+        let count = response.suggestions.len();
+        if count > 0 {
+            let security_count = response
+                .suggestions
+                .iter()
+                .filter(|s| s.category == "security")
+                .count();
+
+            if security_count > 0 {
+                println!(
+                    "VibeTap: {} test suggestion(s) available ({} security). Run 'vibetap now' for details.",
+                    count, security_count
+                );
+            } else {
+                println!(
+                    "VibeTap: {} test suggestion(s) available. Run 'vibetap now' for details or 'vibetap apply' to add.",
+                    count
+                );
+            }
+        }
+        return Ok(());
+    }
+
+    // Full output mode
     println!("\n{}", "=== Test Suggestions ===".bold());
     println!();
 
