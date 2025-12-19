@@ -13,14 +13,14 @@ pub async fn execute(args: InitArgs) -> anyhow::Result<()> {
 
     // TODO: Detect framework and test runner
     // TODO: Read AGENTS.md / CLAUDE.md for project guidance
-    // TODO: Create .aitest/config.json
+    // TODO: Create .vibetap/config.json
 
     if args.force {
         println!("Force mode: overwriting existing configuration");
     }
 
     // Check for existing config
-    let config_path = std::path::Path::new(".aitest/config.json");
+    let config_path = std::path::Path::new(".vibetap/config.json");
     if config_path.exists() && !args.force {
         println!(
             "{}",
@@ -30,7 +30,7 @@ pub async fn execute(args: InitArgs) -> anyhow::Result<()> {
     }
 
     // Create config directory
-    std::fs::create_dir_all(".aitest")?;
+    std::fs::create_dir_all(".vibetap")?;
 
     // Detect project type
     let project_type = detect_project_type();
@@ -53,12 +53,12 @@ pub async fn execute(args: InitArgs) -> anyhow::Result<()> {
     });
 
     std::fs::write(
-        ".aitest/config.json",
+        ".vibetap/config.json",
         serde_json::to_string_pretty(&config)?,
     )?;
 
     println!("{}", "VibeTap initialized successfully!".green());
-    println!("Configuration saved to .aitest/config.json");
+    println!("Configuration saved to .vibetap/config.json");
     println!("\nNext steps:");
     println!("  1. Add your API key: vibetap auth login");
     println!("  2. Start watching: vibetap watch");

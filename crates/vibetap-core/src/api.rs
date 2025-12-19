@@ -79,7 +79,7 @@ pub struct GenerateOptions {
 }
 
 /// Response from generate endpoint
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GenerateResponse {
     pub suggestions: Vec<TestSuggestion>,
@@ -89,7 +89,7 @@ pub struct GenerateResponse {
     pub tokens_used: u32,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TestSuggestion {
     pub id: String,
@@ -168,7 +168,13 @@ impl ApiClient {
             return Err(ApiError::RateLimited { retry_after });
         }
 
-        let api_response: ApiResponse<GenerateResponse> = response.json().await?;
+        let response_text = response.text().await?;
+
+        let api_response: ApiResponse<GenerateResponse> = serde_json::from_str(&response_text)
+            .map_err(|e| ApiError::Api {
+                code: "PARSE_ERROR".to_string(),
+                message: format!("Failed to parse response: {}. Body: {}", e, &response_text[..response_text.len().min(500)]),
+            })?;
 
         if !api_response.success {
             if let Some(error) = api_response.error {

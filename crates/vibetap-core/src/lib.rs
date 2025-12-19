@@ -9,4 +9,4 @@ pub mod api;
 pub mod config;
 
 pub use api::ApiClient;
-pub use config::{Config, GlobalConfig};
+pub use config::{AuthTokens, Config, GlobalConfig};

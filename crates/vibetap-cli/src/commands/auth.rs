@@ -1,8 +1,12 @@
+use std::io::{Read, Write};
+use std::net::TcpListener;
+use std::time::Duration;
+
 use clap::{Args, Subcommand};
 use colored::Colorize;
-use std::io::{self, Write};
+use rand::Rng;
 
-use vibetap_core::{Config, GlobalConfig};
+use vibetap_core::{AuthTokens, Config};
 
 #[derive(Args)]
 pub struct AuthArgs {
@@ -12,7 +16,7 @@ pub struct AuthArgs {
 
 #[derive(Subcommand)]
 enum AuthCommand {
-    /// Log in to VibeTap by providing your API key
+    /// Log in to VibeTap via browser authentication
     Login(LoginArgs),
     /// Log out and remove stored credentials
     Logout,
@@ -22,13 +26,13 @@ enum AuthCommand {
 
 #[derive(Args)]
 struct LoginArgs {
-    /// API key (if not provided, will prompt interactively)
-    #[arg(long)]
-    key: Option<String>,
-
     /// API URL (defaults to https://vibetap.dev)
     #[arg(long)]
     api_url: Option<String>,
+
+    /// Use API key instead of OAuth (for CI/CD)
+    #[arg(long)]
+    key: Option<String>,
 }
 
 pub async fn execute(args: AuthArgs) -> anyhow::Result<()> {
@@ -40,87 +44,214 @@ pub async fn execute(args: AuthArgs) -> anyhow::Result<()> {
 }
 
 async fn login(args: LoginArgs) -> anyhow::Result<()> {
-    println!("{}", "VibeTap Authentication".cyan().bold());
-    println!();
+    let api_url = args
+        .api_url
+        .unwrap_or_else(|| "https://vibetap.dev".to_string());
 
-    let api_key = if let Some(key) = args.key {
-        key
-    } else {
-        println!("To get your API key:");
-        println!("  1. Go to {} and sign in", "https://vibetap.dev".blue().underline());
-        println!("  2. Navigate to Settings → API Keys");
-        println!("  3. Create a new API key and copy it");
-        println!();
+    // If API key provided, use simple key-based auth (for CI/CD)
+    if let Some(key) = args.key {
+        return login_with_key(&key, &api_url).await;
+    }
 
-        print!("{}", "Enter your API key: ".yellow());
-        io::stdout().flush()?;
+    // OAuth flow
+    login_with_oauth(&api_url).await
+}
 
-        let mut key = String::new();
-        io::stdin().read_line(&mut key)?;
-        key.trim().to_string()
-    };
+async fn login_with_key(key: &str, api_url: &str) -> anyhow::Result<()> {
+    println!("{}", "Authenticating with API key...".cyan());
 
-    if api_key.is_empty() {
-        println!("{}", "Error: API key cannot be empty".red());
+    // Validate the key
+    let client = reqwest::Client::new();
+    let response = client
+        .get(format!("{}/api/v1/usage", api_url))
+        .header("Authorization", format!("Bearer {}", key))
+        .send()
+        .await?;
+
+    if !response.status().is_success() {
+        println!("{}", "Invalid API key.".red());
         return Ok(());
     }
 
-    // Validate the API key format
-    if !api_key.starts_with("vt_") {
-        println!("{}", "Warning: API key should start with 'vt_'".yellow());
-    }
+    // Save as API key auth
+    let tokens = AuthTokens {
+        access_token: key.to_string(),
+        refresh_token: None,
+        expires_at: None,
+        auth_type: "api_key".to_string(),
+    };
 
-    let api_url = args.api_url.unwrap_or_else(|| "https://vibetap.dev".to_string());
+    Config::save_tokens(&tokens, api_url)?;
 
-    // Verify the API key by calling the usage endpoint
-    print!("{}", "Verifying API key... ".cyan());
-    io::stdout().flush()?;
-
-    match verify_api_key(&api_key, &api_url).await {
-        Ok(_) => {
-            println!("{}", "✓".green());
-
-            // Save the configuration
-            let config = GlobalConfig {
-                api_key: Some(api_key),
-                api_url: Some(api_url),
-            };
-
-            Config::save_global(&config)?;
-
-            println!();
-            println!("{}", "Successfully authenticated!".green().bold());
-            println!(
-                "Configuration saved to {}",
-                Config::global_config_path().display().to_string().dimmed()
-            );
-        }
-        Err(e) => {
-            println!("{}", "✗".red());
-            println!();
-            println!("{} {}", "Authentication failed:".red(), e);
-            println!();
-            println!("Please check your API key and try again.");
-        }
-    }
+    println!("{}", "Successfully authenticated with API key!".green());
+    println!(
+        "Configuration saved to {}",
+        Config::global_config_path().display().to_string().dimmed()
+    );
 
     Ok(())
+}
+
+async fn login_with_oauth(api_url: &str) -> anyhow::Result<()> {
+    println!("{}", "VibeTap Authentication".cyan().bold());
+    println!();
+
+    // Find an available port
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+
+    // Generate random state for CSRF protection
+    let state: String = rand::rng()
+        .sample_iter(&rand::distr::Alphanumeric)
+        .take(32)
+        .map(char::from)
+        .collect();
+
+    // Build auth URL
+    let auth_url = format!(
+        "{}/cli/auth?port={}&state={}",
+        api_url, port, state
+    );
+
+    println!("Opening browser to authenticate...");
+    println!();
+    println!("If your browser doesn't open, visit:");
+    println!("  {}", auth_url.blue().underline());
+    println!();
+
+    // Open browser
+    if let Err(e) = open::that(&auth_url) {
+        println!(
+            "{} {}",
+            "Could not open browser:".yellow(),
+            e
+        );
+        println!("Please open the URL above manually.");
+    }
+
+    println!("Waiting for authentication...");
+
+    // Wait for callback (with timeout)
+    listener.set_nonblocking(false)?;
+
+    // Set a timeout using a separate thread approach
+    let (tx, rx) = std::sync::mpsc::channel();
+    let listener_clone = listener.try_clone()?;
+
+    std::thread::spawn(move || {
+        // Handle multiple connections (CORS preflight OPTIONS + actual POST)
+        loop {
+            if let Ok((mut stream, _)) = listener_clone.accept() {
+                let mut buffer = [0; 8192];
+                if let Ok(n) = stream.read(&mut buffer) {
+                    let request = String::from_utf8_lossy(&buffer[..n]);
+
+                    // Check if this is a CORS preflight OPTIONS request
+                    if request.starts_with("OPTIONS") {
+                        // Respond to preflight with CORS headers
+                        let response = "HTTP/1.1 204 No Content\r\n\
+                            Access-Control-Allow-Origin: *\r\n\
+                            Access-Control-Allow-Methods: POST, OPTIONS\r\n\
+                            Access-Control-Allow-Headers: Content-Type\r\n\
+                            Access-Control-Max-Age: 86400\r\n\r\n";
+                        let _ = stream.write_all(response.as_bytes());
+                        // Continue listening for the actual POST
+                        continue;
+                    }
+
+                    // This is the actual POST with tokens
+                    let _ = tx.send(request.to_string());
+
+                    // Send success response with CORS headers
+                    let response = "HTTP/1.1 200 OK\r\n\
+                        Content-Type: application/json\r\n\
+                        Access-Control-Allow-Origin: *\r\n\r\n\
+                        {\"success\":true}";
+                    let _ = stream.write_all(response.as_bytes());
+                    break; // Done, exit the loop
+                }
+            }
+        }
+    });
+
+    // Wait for callback with 2 minute timeout
+    let request = rx
+        .recv_timeout(Duration::from_secs(120))
+        .map_err(|_| anyhow::anyhow!("Authentication timed out"))?;
+
+    // Parse the callback
+    let tokens = parse_callback(&request, &state)?;
+
+    // Save tokens
+    Config::save_tokens(&tokens, api_url)?;
+
+    println!();
+    println!("{}", "Successfully authenticated!".green().bold());
+    println!(
+        "Configuration saved to {}",
+        Config::global_config_path().display().to_string().dimmed()
+    );
+
+    Ok(())
+}
+
+fn parse_callback(request: &str, expected_state: &str) -> anyhow::Result<AuthTokens> {
+    // Parse HTTP POST request with JSON body
+    // Request looks like: POST /callback HTTP/1.1\r\n...headers...\r\n\r\n{"access_token":...}
+
+    // Find the empty line that separates headers from body
+    let body = request
+        .split("\r\n\r\n")
+        .nth(1)
+        .or_else(|| request.split("\n\n").nth(1))
+        .ok_or_else(|| anyhow::anyhow!("Invalid callback request: no body"))?;
+
+    // Parse JSON body
+    let parsed: serde_json::Value = serde_json::from_str(body)
+        .map_err(|e| anyhow::anyhow!("Failed to parse callback body: {}", e))?;
+
+    // Verify state
+    let state = parsed
+        .get("state")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("Missing state parameter"))?;
+
+    if state != expected_state {
+        return Err(anyhow::anyhow!("State mismatch - possible CSRF attack"));
+    }
+
+    // Extract tokens
+    let access_token = parsed
+        .get("access_token")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("Missing access token"))?
+        .to_string();
+
+    let refresh_token = parsed
+        .get("refresh_token")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    let expires_at = parsed
+        .get("expires_at")
+        .and_then(|v| v.as_i64());
+
+    Ok(AuthTokens {
+        access_token,
+        refresh_token,
+        expires_at,
+        auth_type: "oauth".to_string(),
+    })
 }
 
 async fn logout() -> anyhow::Result<()> {
     let config_path = Config::global_config_path();
 
     if config_path.exists() {
-        // Load existing config and clear the API key
-        let config = GlobalConfig {
-            api_key: None,
-            api_url: None,
-        };
-        Config::save_global(&config)?;
-
+        Config::clear_tokens()?;
         println!("{}", "Successfully logged out.".green());
         println!(
-            "API key removed from {}",
+            "Credentials removed from {}",
             config_path.display().to_string().dimmed()
         );
     } else {
@@ -136,31 +267,37 @@ async fn status() -> anyhow::Result<()> {
     println!("{}", "VibeTap Authentication Status".cyan().bold());
     println!();
 
-    if let Some(ref key) = config.global.api_key {
-        let masked = if key.len() > 12 {
-            format!("{}...{}", &key[..8], &key[key.len() - 4..])
-        } else {
-            "****".to_string()
+    if let Some(ref tokens) = config.tokens {
+        let auth_type = match tokens.auth_type.as_str() {
+            "oauth" => "OAuth (browser login)",
+            "api_key" => "API Key",
+            _ => "Unknown",
         };
 
         println!("  {} {}", "Status:".bold(), "Authenticated".green());
-        println!("  {} {}", "API Key:".bold(), masked.dimmed());
+        println!("  {} {}", "Method:".bold(), auth_type.dimmed());
         println!("  {} {}", "API URL:".bold(), config.api_url().dimmed());
 
-        // Try to fetch usage info
-        print!("\n{}", "Fetching usage info... ".cyan());
-        io::stdout().flush()?;
+        if tokens.auth_type == "oauth" {
+            // Note: Access tokens expire hourly but auto-refresh keeps you logged in
+            println!(
+                "  {} {}",
+                "Session:".bold(),
+                "Active (auto-refreshing)".green()
+            );
+        }
 
-        match fetch_usage(key, config.api_url()).await {
-            Ok(usage) => {
+        // Try to fetch usage info
+        print!("\n{}", "Fetching account info... ".cyan());
+        std::io::stdout().flush()?;
+
+        match fetch_user_info(&config).await {
+            Ok(email) => {
                 println!("{}", "✓".green());
-                println!();
-                println!("  {} {}", "Requests this period:".bold(), usage.total_requests);
-                println!("  {} {}", "Tokens used:".bold(), usage.total_tokens);
+                println!("  {} {}", "Account:".bold(), email);
             }
             Err(_) => {
                 println!("{}", "✗".red());
-                println!("  Could not fetch usage information.");
             }
         }
     } else {
@@ -172,59 +309,20 @@ async fn status() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn verify_api_key(api_key: &str, api_url: &str) -> anyhow::Result<()> {
-    let client = reqwest::Client::new();
-    let url = format!("{}/api/v1/usage", api_url);
+async fn fetch_user_info(config: &Config) -> anyhow::Result<String> {
+    let tokens = config.tokens.as_ref().ok_or_else(|| anyhow::anyhow!("Not authenticated"))?;
 
+    let client = reqwest::Client::new();
     let response = client
-        .get(&url)
-        .header("Authorization", format!("Bearer {}", api_key))
+        .get(format!("{}/api/v1/usage", config.api_url()))
+        .header("Authorization", format!("Bearer {}", tokens.access_token))
         .send()
         .await?;
 
     if response.status().is_success() {
-        Ok(())
-    } else if response.status() == reqwest::StatusCode::UNAUTHORIZED {
-        anyhow::bail!("Invalid API key")
+        // For now just return a placeholder - we'd need a /me endpoint to get user info
+        Ok("Authenticated".to_string())
     } else {
-        anyhow::bail!("Server error: {}", response.status())
+        Err(anyhow::anyhow!("Failed to fetch user info"))
     }
-}
-
-struct UsageInfo {
-    total_requests: u32,
-    total_tokens: u32,
-}
-
-async fn fetch_usage(api_key: &str, api_url: &str) -> anyhow::Result<UsageInfo> {
-    let client = reqwest::Client::new();
-    let url = format!("{}/api/v1/usage", api_url);
-
-    let response = client
-        .get(&url)
-        .header("Authorization", format!("Bearer {}", api_key))
-        .send()
-        .await?;
-
-    if !response.status().is_success() {
-        anyhow::bail!("Failed to fetch usage");
-    }
-
-    let body: serde_json::Value = response.json().await?;
-
-    let usage = body
-        .get("data")
-        .and_then(|d| d.get("usage"))
-        .ok_or_else(|| anyhow::anyhow!("Invalid response"))?;
-
-    Ok(UsageInfo {
-        total_requests: usage
-            .get("totalRequests")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as u32,
-        total_tokens: usage
-            .get("totalTokens")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as u32,
-    })
 }

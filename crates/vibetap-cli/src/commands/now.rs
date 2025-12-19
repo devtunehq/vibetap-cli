@@ -1,13 +1,29 @@
 use clap::Args;
 use colored::Colorize;
 use indicatif::{ProgressBar, ProgressStyle};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::path::Path;
 use std::time::Duration;
+use syntect::easy::HighlightLines;
+use syntect::highlighting::{Style, ThemeSet};
+use syntect::parsing::SyntaxSet;
+use syntect::util::{as_24_bit_terminal_escaped, LinesWithEndings};
 
 use vibetap_core::{
-    api::{DiffHunk, DiffPayload, FileContext, GenerateOptions, GenerateRequest},
+    api::{DiffHunk, DiffPayload, FileContext, GenerateOptions, GenerateRequest, GenerateResponse},
     ApiClient, Config,
 };
 use vibetap_git::{get_staged_diff, get_uncommitted_diff, GitError};
+
+/// Saved suggestions with source file state for change detection
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedSuggestions {
+    pub response: GenerateResponse,
+    pub source_files: HashMap<String, String>, // path -> content hash
+    pub generated_at: i64,
+}
 
 #[derive(Args)]
 pub struct NowArgs {
@@ -34,9 +50,9 @@ pub struct NowArgs {
 
 pub async fn execute(args: NowArgs) -> anyhow::Result<()> {
     // Load configuration
-    let config = Config::load()?;
-    let api_key = config.api_key()?;
-    let api_url = config.api_url();
+    let mut config = Config::load()?;
+    let access_token = config.get_valid_access_token().await?;
+    let api_url = config.api_url().to_string();
 
     // Get the diff based on scope
     let diff = if args.uncommitted {
@@ -88,7 +104,7 @@ pub async fn execute(args: NowArgs) -> anyhow::Result<()> {
     let request = build_request(&diff, &args, &config);
 
     // Call the API
-    let client = ApiClient::new(api_url, api_key);
+    let client = ApiClient::new(api_url, access_token);
     let response = match client.generate(request).await {
         Ok(r) => r,
         Err(e) => {
@@ -99,6 +115,11 @@ pub async fn execute(args: NowArgs) -> anyhow::Result<()> {
     };
 
     spinner.finish_and_clear();
+
+    // Save suggestions for later use by apply command (with source file hashes)
+    if let Err(e) = save_suggestions(&response, &diff.files_changed) {
+        eprintln!("{} {}", "Warning: Could not save suggestions:".yellow(), e);
+    }
 
     // Display results
     println!("\n{}", "=== Test Suggestions ===".bold());
@@ -123,19 +144,24 @@ pub async fn execute(args: NowArgs) -> anyhow::Result<()> {
             format!("{}.", i + 1).bold(),
             suggestion.file_path.cyan()
         );
-        println!("   {} {}", "Type:".dimmed(), format_category(&suggestion.category));
         println!(
-            "   {} {:.0}%",
+            "   {} {} | {} {:.0}%",
+            "Type:".dimmed(),
+            format_category(&suggestion.category),
             "Confidence:".dimmed(),
             suggestion.confidence * 100.0
         );
-        println!("   {} {}", "Description:".dimmed(), suggestion.description);
+        println!("   {}", suggestion.description.dimmed());
+        println!();
+
+        // Display the test code with a border
+        print_code_block(&suggestion.code, &suggestion.file_path);
 
         if !suggestion.risks_addressed.is_empty() {
             println!(
                 "   {} {}",
-                "Risks covered:".dimmed(),
-                suggestion.risks_addressed.join(", ")
+                "Risks:".dimmed(),
+                suggestion.risks_addressed.join(", ").dimmed()
             );
         }
         println!();
@@ -243,4 +269,98 @@ fn format_category(category: &str) -> String {
         "regression" => "Regression test".to_string(),
         _ => category.to_string(),
     }
+}
+
+fn print_code_block(code: &str, file_path: &str) {
+    let ps = SyntaxSet::load_defaults_newlines();
+    let ts = ThemeSet::load_defaults();
+    let theme = &ts.themes["base16-ocean.dark"];
+
+    // Detect syntax from file extension
+    let extension = file_path.rsplit('.').next().unwrap_or("ts");
+    let syntax = ps
+        .find_syntax_by_extension(extension)
+        .or_else(|| ps.find_syntax_by_extension("ts"))
+        .unwrap_or_else(|| ps.find_syntax_plain_text());
+
+    let mut highlighter = HighlightLines::new(syntax, theme);
+
+    // Print top border
+    println!("   {}", "┌─".dimmed());
+
+    // Print highlighted code
+    for line in LinesWithEndings::from(code) {
+        let ranges: Vec<(Style, &str)> = highlighter.highlight_line(line, &ps).unwrap();
+        let escaped = as_24_bit_terminal_escaped(&ranges[..], false);
+        // Remove trailing newline for cleaner output
+        let escaped = escaped.trim_end_matches('\n');
+        println!("   {}  {}", "│".dimmed(), escaped);
+    }
+
+    // Print bottom border and reset colors
+    println!("   {}\x1b[0m", "└─".dimmed());
+}
+
+/// Save suggestions to .vibetap/last-suggestions.json for apply command
+fn save_suggestions(response: &GenerateResponse, source_files: &[String]) -> anyhow::Result<()> {
+    let vibetap_dir = Path::new(".vibetap");
+    if !vibetap_dir.exists() {
+        std::fs::create_dir_all(vibetap_dir)?;
+    }
+
+    // Compute hashes of source files
+    let mut file_hashes = HashMap::new();
+    for path in source_files {
+        if let Ok(content) = std::fs::read_to_string(path) {
+            file_hashes.insert(path.clone(), compute_hash(&content));
+        }
+    }
+
+    let saved = SavedSuggestions {
+        response: response.clone(),
+        source_files: file_hashes,
+        generated_at: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0),
+    };
+
+    let suggestions_path = vibetap_dir.join("last-suggestions.json");
+    let json = serde_json::to_string_pretty(&saved)?;
+    std::fs::write(suggestions_path, json)?;
+
+    Ok(())
+}
+
+/// Compute a simple hash of content for change detection
+pub fn compute_hash(content: &str) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = DefaultHasher::new();
+    content.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
+/// Load the last saved suggestions
+pub fn load_suggestions() -> anyhow::Result<SavedSuggestions> {
+    let suggestions_path = Path::new(".vibetap/last-suggestions.json");
+    if !suggestions_path.exists() {
+        anyhow::bail!("No suggestions found. Run 'vibetap now' first.");
+    }
+
+    let content = std::fs::read_to_string(suggestions_path)?;
+
+    // Try to load new format first, fall back to old format for backwards compatibility
+    if let Ok(saved) = serde_json::from_str::<SavedSuggestions>(&content) {
+        return Ok(saved);
+    }
+
+    // Fall back to old format (just GenerateResponse)
+    let response: GenerateResponse = serde_json::from_str(&content)?;
+    Ok(SavedSuggestions {
+        response,
+        source_files: HashMap::new(), // No hashes in old format
+        generated_at: 0,
+    })
 }
