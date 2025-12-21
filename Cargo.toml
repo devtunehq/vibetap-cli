@@ -53,7 +53,7 @@ indicatif = "0.17"
 syntect = "5.2"
 
 # Browser
-open = "5.3"
+webbrowser = "1.0"
 
 # Random
 rand = "0.9"

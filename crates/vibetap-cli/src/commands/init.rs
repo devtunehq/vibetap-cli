@@ -62,7 +62,7 @@ pub async fn execute(args: InitArgs) -> anyhow::Result<()> {
     println!("\nNext steps:");
     println!("  1. Add your API key: vibetap auth login");
     println!("  2. Start watching: vibetap watch");
-    println!("  3. Or generate now: vibetap now --staged");
+    println!("  3. Or generate tests: vibetap generate");
 
     Ok(())
 }

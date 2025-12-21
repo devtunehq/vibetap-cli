@@ -26,8 +26,9 @@ enum Commands {
     /// Watch for staged changes and suggest tests
     Watch(commands::watch::WatchArgs),
 
-    /// Generate tests immediately for current changes
-    Now(commands::now::NowArgs),
+    /// Generate tests for current changes
+    #[command(visible_alias = "gen")]
+    Generate(commands::generate::GenerateArgs),
 
     /// Apply a suggestion or the latest suggestion set
     Apply(commands::apply::ApplyArgs),
@@ -66,7 +67,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::Auth(args) => commands::auth::execute(args).await,
         Commands::Init(args) => commands::init::execute(args).await,
         Commands::Watch(args) => commands::watch::execute(args).await,
-        Commands::Now(args) => commands::now::execute(args).await,
+        Commands::Generate(args) => commands::generate::execute(args).await,
         Commands::Apply(args) => commands::apply::execute(args).await,
         Commands::Revert(args) => commands::revert::execute(args).await,
         Commands::Hush(args) => commands::hush::execute(args).await,

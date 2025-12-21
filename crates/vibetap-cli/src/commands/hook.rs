@@ -87,7 +87,7 @@ fn install(args: InstallArgs) -> anyhow::Result<()> {
     }
 
     // Build the vibetap command
-    let mut vibetap_cmd = "vibetap now --staged --quiet".to_string();
+    let mut vibetap_cmd = "vibetap generate --staged --quiet".to_string();
     if args.security_only {
         vibetap_cmd.push_str(" --security");
     }
@@ -151,7 +151,7 @@ fn install(args: InstallArgs) -> anyhow::Result<()> {
     println!();
     println!(
         "The hook will run {} before each commit.",
-        "vibetap now".cyan()
+        "vibetap generate".cyan()
     );
     println!(
         "Run {} to remove the hook.",

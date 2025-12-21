@@ -119,8 +119,8 @@ async fn login_with_oauth(api_url: &str) -> anyhow::Result<()> {
     println!("  {}", auth_url.blue().underline());
     println!();
 
-    // Open browser
-    if let Err(e) = open::that(&auth_url) {
+    // Open browser (webbrowser crate has better fallback logic than open)
+    if let Err(e) = webbrowser::open(&auth_url) {
         println!(
             "{} {}",
             "Could not open browser:".yellow(),

@@ -26,7 +26,11 @@ pub struct SavedSuggestions {
 }
 
 #[derive(Args)]
-pub struct NowArgs {
+pub struct GenerateArgs {
+    /// Specific file to generate tests for (optional, defaults to all staged changes)
+    #[arg(value_name = "FILE")]
+    file: Option<String>,
+
     /// Generate tests for staged changes only (default)
     #[arg(long, default_value = "true")]
     staged: bool,
@@ -52,7 +56,7 @@ pub struct NowArgs {
     quiet: bool,
 }
 
-pub async fn execute(args: NowArgs) -> anyhow::Result<()> {
+pub async fn execute(args: GenerateArgs) -> anyhow::Result<()> {
     // Load configuration
     let mut config = Config::load()?;
     let access_token = config.get_valid_access_token().await?;
@@ -73,7 +77,7 @@ pub async fn execute(args: NowArgs) -> anyhow::Result<()> {
         get_staged_diff()
     };
 
-    let diff = match diff {
+    let mut diff = match diff {
         Ok(d) => d,
         Err(GitError::NoStagedChanges) => {
             if !quiet {
@@ -97,6 +101,29 @@ pub async fn execute(args: NowArgs) -> anyhow::Result<()> {
             return Err(e.into());
         }
     };
+
+    // Filter by specific file if provided
+    if let Some(ref file_filter) = args.file {
+        let normalized_filter = file_filter.trim_start_matches("./");
+        diff.hunks.retain(|h| {
+            let normalized_path = h.file_path.trim_start_matches("./");
+            normalized_path == normalized_filter || normalized_path.ends_with(normalized_filter)
+        });
+        diff.files_changed.retain(|f| {
+            let normalized_path = f.trim_start_matches("./");
+            normalized_path == normalized_filter || normalized_path.ends_with(normalized_filter)
+        });
+
+        if diff.hunks.is_empty() {
+            if !quiet {
+                println!(
+                    "\n{}",
+                    format!("No changes found for file: {}", file_filter).yellow()
+                );
+            }
+            return Ok(());
+        }
+    }
 
     if !quiet {
         println!(
@@ -162,12 +189,12 @@ pub async fn execute(args: NowArgs) -> anyhow::Result<()> {
 
             if security_count > 0 {
                 println!(
-                    "VibeTap: {} test suggestion(s) available ({} security). Run 'vibetap now' for details.",
+                    "VibeTap: {} test suggestion(s) available ({} security). Run 'vibetap generate' for details.",
                     count, security_count
                 );
             } else {
                 println!(
-                    "VibeTap: {} test suggestion(s) available. Run 'vibetap now' for details or 'vibetap apply' to add.",
+                    "VibeTap: {} test suggestion(s) available. Run 'vibetap generate' for details or 'vibetap apply' to add.",
                     count
                 );
             }
@@ -238,7 +265,7 @@ pub async fn execute(args: NowArgs) -> anyhow::Result<()> {
 
 fn build_request(
     diff: &vibetap_git::StagedDiff,
-    args: &NowArgs,
+    args: &GenerateArgs,
     config: &Config,
 ) -> GenerateRequest {
     let hunks: Vec<DiffHunk> = diff
@@ -262,7 +289,7 @@ fn build_request(
             std::fs::read_to_string(path).ok().map(|content| FileContext {
                 path: path.clone(),
                 content: content.chars().take(50000).collect(), // Limit to 50KB
-                language: detect_language(path),
+                language: Some(detect_language(path)),
             })
         })
         .take(10) // Limit context files
@@ -296,21 +323,30 @@ fn build_request(
     }
 }
 
-fn detect_language(path: &str) -> Option<String> {
-    let ext = path.rsplit('.').next()?;
+fn detect_language(path: &str) -> String {
+    let ext = path.rsplit('.').next().unwrap_or("");
     match ext {
-        "ts" | "tsx" => Some("typescript".to_string()),
-        "js" | "jsx" => Some("javascript".to_string()),
-        "py" => Some("python".to_string()),
-        "rs" => Some("rust".to_string()),
-        "go" => Some("go".to_string()),
-        "java" => Some("java".to_string()),
-        "rb" => Some("ruby".to_string()),
-        "php" => Some("php".to_string()),
-        "cs" => Some("csharp".to_string()),
-        "cpp" | "cc" | "cxx" => Some("cpp".to_string()),
-        "c" | "h" => Some("c".to_string()),
-        _ => None,
+        "ts" | "tsx" => "typescript".to_string(),
+        "js" | "jsx" => "javascript".to_string(),
+        "py" => "python".to_string(),
+        "rs" => "rust".to_string(),
+        "go" => "go".to_string(),
+        "java" => "java".to_string(),
+        "rb" => "ruby".to_string(),
+        "php" => "php".to_string(),
+        "cs" => "csharp".to_string(),
+        "cpp" | "cc" | "cxx" => "cpp".to_string(),
+        "c" | "h" => "c".to_string(),
+        "json" => "json".to_string(),
+        "yaml" | "yml" => "yaml".to_string(),
+        "toml" => "toml".to_string(),
+        "md" => "markdown".to_string(),
+        "sql" => "sql".to_string(),
+        "sh" | "bash" => "shell".to_string(),
+        "css" => "css".to_string(),
+        "scss" | "sass" => "scss".to_string(),
+        "html" | "htm" => "html".to_string(),
+        _ => "text".to_string(),
     }
 }
 
@@ -400,7 +436,7 @@ pub fn compute_hash(content: &str) -> String {
 pub fn load_suggestions() -> anyhow::Result<SavedSuggestions> {
     let suggestions_path = Path::new(".vibetap/last-suggestions.json");
     if !suggestions_path.exists() {
-        anyhow::bail!("No suggestions found. Run 'vibetap now' first.");
+        anyhow::bail!("No suggestions found. Run 'vibetap generate' first.");
     }
 
     let content = std::fs::read_to_string(suggestions_path)?;

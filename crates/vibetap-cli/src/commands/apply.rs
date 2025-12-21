@@ -8,7 +8,7 @@ use syntect::highlighting::{Style, ThemeSet};
 use syntect::parsing::SyntaxSet;
 use syntect::util::{as_24_bit_terminal_escaped, LinesWithEndings};
 
-use super::now::{compute_hash, load_suggestions, SavedSuggestions};
+use super::generate::{compute_hash, load_suggestions, SavedSuggestions};
 
 #[derive(Args)]
 pub struct ApplyArgs {
@@ -62,7 +62,7 @@ pub async fn execute(args: ApplyArgs) -> anyhow::Result<()> {
             println!();
             println!("{}", "The suggestions may be outdated or cause conflicts.".dimmed());
             println!("Options:");
-            println!("  {} - Re-generate with current changes", "vibetap now".cyan());
+            println!("  {} - Re-generate with current changes", "vibetap generate".cyan());
             println!("  {} - Apply anyway", "vibetap apply --force".cyan());
 
             if !args.yes {
@@ -73,7 +73,7 @@ pub async fn execute(args: ApplyArgs) -> anyhow::Result<()> {
                 io::stdin().read_line(&mut confirm)?;
 
                 if !confirm.trim().eq_ignore_ascii_case("y") {
-                    println!("{}", "Cancelled. Run 'vibetap now' to regenerate.".dimmed());
+                    println!("{}", "Cancelled. Run 'vibetap generate' to regenerate.".dimmed());
                     return Ok(());
                 }
             } else {
