@@ -6,4 +6,6 @@ pub mod hush;
 pub mod init;
 pub mod revert;
 pub mod run;
+pub mod scan;
+pub mod stats;
 pub mod watch;

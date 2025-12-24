@@ -85,8 +85,10 @@ pub struct GenerateResponse {
     pub suggestions: Vec<TestSuggestion>,
     pub summary: String,
     pub model_used: String,
-    pub escalated: bool,
+    #[serde(default)]
+    pub used_byok: bool,
     pub tokens_used: u32,
+    pub warning: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -220,6 +222,31 @@ impl ApiClient {
                 message: "Response contained no data".to_string(),
             })
     }
+
+    /// Get user stats for the stats command
+    pub async fn get_stats(&self) -> Result<StatsResponse, ApiError> {
+        let url = format!("{}/api/v1/stats", self.base_url);
+
+        let response = self
+            .client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .send()
+            .await?;
+
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(ApiError::Unauthorized);
+        }
+
+        let api_response: ApiResponse<StatsResponse> = response.json().await?;
+
+        api_response
+            .data
+            .ok_or_else(|| ApiError::Api {
+                code: "NO_DATA".to_string(),
+                message: "Response contained no data".to_string(),
+            })
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -251,4 +278,50 @@ pub struct UsageLimits {
     pub requests_per_hour: u32,
     pub tokens_per_day: u32,
     pub tokens_remaining: u32,
+}
+
+/// Stats response from the stats endpoint
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StatsResponse {
+    pub this_month: MonthlyStats,
+    pub all_time: AllTimeStats,
+    pub plan: PlanInfo,
+    #[serde(default)]
+    pub byok: Option<ByokInfo>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ByokInfo {
+    pub enabled: bool,
+    pub total_requests: u32,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MonthlyStats {
+    pub generations: u32,
+    pub remaining: u32,
+    pub limit: u32,
+    pub security_issues_caught: u32,
+    pub tests_applied: u32,
+    pub acceptance_rate: f64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AllTimeStats {
+    pub total_generations: u32,
+    pub total_security_issues: u32,
+    pub total_tests_applied: u32,
+    pub top_framework: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanInfo {
+    pub name: String,
+    pub generations_per_month: u32,
+    pub credits_balance: u32,
 }

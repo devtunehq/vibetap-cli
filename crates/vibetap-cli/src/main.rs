@@ -44,6 +44,12 @@ enum Commands {
 
     /// Manage git pre-commit hooks
     Hook(commands::hook::HookArgs),
+
+    /// Show your usage stats
+    Stats(commands::stats::StatsArgs),
+
+    /// Scan repository for coverage gaps
+    Scan(commands::scan::ScanArgs),
 }
 
 #[tokio::main]
@@ -73,6 +79,8 @@ async fn main() -> anyhow::Result<()> {
         Commands::Hush(args) => commands::hush::execute(args).await,
         Commands::Run(args) => commands::run::execute(args).await,
         Commands::Hook(args) => commands::hook::execute(args).await,
+        Commands::Stats(args) => commands::stats::execute(args).await,
+        Commands::Scan(args) => commands::scan::execute(args).await,
     }
 }
 // test comment

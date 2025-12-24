@@ -28,6 +28,7 @@ webbrowser.workspace = true
 rand.workspace = true
 notify.workspace = true
 notify-debouncer-mini.workspace = true
+walkdir.workspace = true
 
 vibetap-core.workspace = true
 vibetap-git.workspace = true

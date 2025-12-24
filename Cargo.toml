@@ -32,6 +32,9 @@ git2 = "0.19"
 notify = "7.0"
 notify-debouncer-mini = "0.5"
 
+# File system
+walkdir = "2.5"
+
 # Config
 toml = "0.8"
 dirs = "5.0"

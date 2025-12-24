@@ -206,11 +206,16 @@ pub async fn execute(args: GenerateArgs) -> anyhow::Result<()> {
     println!("\n{}", "=== Test Suggestions ===".bold());
     println!();
 
-    if response.escalated {
+    if response.used_byok {
         println!(
             "{}",
-            "ℹ Used enhanced model for complex/security-sensitive code".dimmed()
+            "ℹ Using your own API key (BYOK mode)".dimmed()
         );
+        println!();
+    }
+
+    if let Some(ref warning) = response.warning {
+        println!("{} {}", "⚠".yellow(), warning.yellow());
         println!();
     }
 
@@ -367,10 +372,21 @@ fn print_code_block(code: &str, file_path: &str) {
     let theme = &ts.themes["base16-ocean.dark"];
 
     // Detect syntax from file extension
-    let extension = file_path.rsplit('.').next().unwrap_or("ts");
+    let extension = file_path.rsplit('.').next().unwrap_or("js");
+
+    // Find syntax with fallback chain: exact match -> JS for TS files -> Python -> plain text
     let syntax = ps
         .find_syntax_by_extension(extension)
-        .or_else(|| ps.find_syntax_by_extension("ts"))
+        .or_else(|| {
+            // TypeScript isn't in syntect's defaults, fall back to JavaScript
+            if extension == "ts" || extension == "tsx" {
+                ps.find_syntax_by_extension("js")
+            } else if extension == "jsx" {
+                ps.find_syntax_by_extension("js")
+            } else {
+                None
+            }
+        })
         .unwrap_or_else(|| ps.find_syntax_plain_text());
 
     let mut highlighter = HighlightLines::new(syntax, theme);
@@ -378,17 +394,17 @@ fn print_code_block(code: &str, file_path: &str) {
     // Print top border
     println!("   {}", "┌─".dimmed());
 
-    // Print highlighted code
+    // Print highlighted code with proper color resets
     for line in LinesWithEndings::from(code) {
         let ranges: Vec<(Style, &str)> = highlighter.highlight_line(line, &ps).unwrap();
-        let escaped = as_24_bit_terminal_escaped(&ranges[..], false);
+        let escaped = as_24_bit_terminal_escaped(&ranges[..], true); // Reset colors at end
         // Remove trailing newline for cleaner output
         let escaped = escaped.trim_end_matches('\n');
         println!("   {}  {}", "│".dimmed(), escaped);
     }
 
-    // Print bottom border and reset colors
-    println!("   {}\x1b[0m", "└─".dimmed());
+    // Print bottom border
+    println!("   {}", "└─".dimmed());
 }
 
 /// Save suggestions to .vibetap/last-suggestions.json for apply command

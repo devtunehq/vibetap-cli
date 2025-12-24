@@ -2120,6 +2120,7 @@ dependencies = [
  "tracing-subscriber",
  "vibetap-core",
  "vibetap-git",
+ "walkdir",
  "webbrowser",
 ]
 
