@@ -3,6 +3,7 @@ use colored::Colorize;
 use indicatif::{ProgressBar, ProgressStyle};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::io::{self, Write};
 use std::path::Path;
 use std::time::Duration;
 use syntect::easy::HighlightLines;
@@ -11,7 +12,10 @@ use syntect::parsing::SyntaxSet;
 use syntect::util::{as_24_bit_terminal_escaped, LinesWithEndings};
 
 use vibetap_core::{
-    api::{DiffHunk, DiffPayload, FileContext, GenerateOptions, GenerateRequest, GenerateResponse},
+    api::{
+        DiffHunk, DiffPayload, FileContext, GenerateOptions, GenerateRequest, GenerateResponse,
+        StreamEvent,
+    },
     ApiClient, Config,
 };
 use vibetap_git::{get_staged_diff, get_uncommitted_diff, GitError};
@@ -133,31 +137,90 @@ pub async fn execute(args: GenerateArgs) -> anyhow::Result<()> {
         );
     }
 
-    // Show progress spinner (only in non-quiet mode)
-    let spinner = if !quiet {
-        let s = ProgressBar::new_spinner();
-        s.set_style(
+    // Build the API request
+    let request = build_request(&diff, &args, &config);
+
+    // Calculate payload size for progress display
+    let payload_size = serde_json::to_string(&request)
+        .map(|s| s.len())
+        .unwrap_or(0);
+
+    // Show upload progress bar (only in non-quiet mode)
+    if !quiet {
+        print_upload_progress(payload_size);
+    }
+
+    // Call the streaming API
+    let client = ApiClient::new(api_url, access_token);
+
+    // Create progress bar for generation phase
+    let progress_bar = if !quiet {
+        let pb = ProgressBar::new_spinner();
+        pb.set_style(
             ProgressStyle::default_spinner()
                 .template("{spinner:.cyan} {msg}")
                 .unwrap(),
         );
-        s.set_message("Generating test suggestions...");
-        s.enable_steady_tick(Duration::from_millis(100));
-        Some(s)
+        pb.enable_steady_tick(Duration::from_millis(100));
+        Some(pb)
     } else {
         None
     };
 
-    // Build the API request
-    let request = build_request(&diff, &args, &config);
+    // Track suggestions as they stream in
+    let mut streamed_suggestions: Vec<vibetap_core::api::TestSuggestion> = Vec::new();
 
-    // Call the API
-    let client = ApiClient::new(api_url, access_token);
-    let response = match client.generate(request).await {
+    let response = match client
+        .generate_streaming(request, |event| {
+            match event {
+                StreamEvent::Progress { phase, message, .. } => {
+                    if let Some(ref pb) = progress_bar {
+                        let phase_icon = match phase.as_str() {
+                            "authenticating" => "🔐",
+                            "analyzing" => "🔍",
+                            "context" => "📚",
+                            "generating" => "⚡",
+                            _ => "•",
+                        };
+                        pb.set_message(format!("{} {}", phase_icon, message));
+                    }
+                }
+                StreamEvent::Suggestion {
+                    index,
+                    total,
+                    suggestion,
+                } => {
+                    if let Some(ref pb) = progress_bar {
+                        pb.set_message(format!(
+                            "📝 Generated suggestion {}/{}: {}",
+                            index,
+                            total,
+                            suggestion.file_path.cyan()
+                        ));
+                    }
+                    streamed_suggestions.push(suggestion);
+                }
+                StreamEvent::Complete { .. } => {
+                    if let Some(ref pb) = progress_bar {
+                        pb.finish_and_clear();
+                    }
+                }
+                StreamEvent::Error { code, message } => {
+                    if let Some(ref pb) = progress_bar {
+                        pb.finish_and_clear();
+                    }
+                    if !quiet {
+                        eprintln!("\n{} {} - {}", "Error:".red(), code, message);
+                    }
+                }
+            }
+        })
+        .await
+    {
         Ok(r) => r,
         Err(e) => {
-            if let Some(s) = spinner {
-                s.finish_and_clear();
+            if let Some(pb) = progress_bar {
+                pb.finish_and_clear();
             }
             if !quiet {
                 println!("\n{} {}", "Error:".red(), e);
@@ -165,10 +228,6 @@ pub async fn execute(args: GenerateArgs) -> anyhow::Result<()> {
             return Ok(());
         }
     };
-
-    if let Some(s) = spinner {
-        s.finish_and_clear();
-    }
 
     // Save suggestions for later use by apply command (with source file hashes)
     if let Err(e) = save_suggestions(&response, &diff.files_changed) {
@@ -469,4 +528,48 @@ pub fn load_suggestions() -> anyhow::Result<SavedSuggestions> {
         source_files: HashMap::new(), // No hashes in old format
         generated_at: 0,
     })
+}
+
+/// Print a nice ASCII art upload progress bar
+fn print_upload_progress(payload_size: usize) {
+    let size_kb = payload_size as f64 / 1024.0;
+    let bar_width = 30;
+    let filled = bar_width; // Instant upload visualization
+
+    // Build the progress bar
+    let bar: String = "█".repeat(filled);
+    let empty: String = "░".repeat(bar_width - filled);
+
+    // Print upload progress
+    print!(
+        "\r  {} [{}{}] {:.1} KB ",
+        "Uploading".cyan(),
+        bar.green(),
+        empty.dimmed(),
+        size_kb
+    );
+    io::stdout().flush().ok();
+
+    // Simulate brief upload animation for visual feedback
+    for i in 0..=bar_width {
+        let filled_part: String = "█".repeat(i);
+        let empty_part: String = "░".repeat(bar_width - i);
+        print!(
+            "\r  {} [{}{}] {:.1} KB ",
+            "Uploading".cyan(),
+            filled_part.green(),
+            empty_part.dimmed(),
+            size_kb * (i as f64 / bar_width as f64)
+        );
+        io::stdout().flush().ok();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    println!(
+        "\r  {} [{}] {:.1} KB {}",
+        "Uploaded".green(),
+        "█".repeat(bar_width).green(),
+        size_kb,
+        "✓".green()
+    );
 }
