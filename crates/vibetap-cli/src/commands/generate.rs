@@ -433,14 +433,12 @@ fn print_code_block(code: &str, file_path: &str) {
     // Detect syntax from file extension
     let extension = file_path.rsplit('.').next().unwrap_or("js");
 
-    // Find syntax with fallback chain: exact match -> JS for TS files -> Python -> plain text
+    // Find syntax with fallback chain: exact match -> JS for TS/JSX files -> plain text
     let syntax = ps
         .find_syntax_by_extension(extension)
         .or_else(|| {
-            // TypeScript isn't in syntect's defaults, fall back to JavaScript
-            if extension == "ts" || extension == "tsx" {
-                ps.find_syntax_by_extension("js")
-            } else if extension == "jsx" {
+            // TypeScript/JSX aren't in syntect's defaults, fall back to JavaScript
+            if matches!(extension, "ts" | "tsx" | "jsx") {
                 ps.find_syntax_by_extension("js")
             } else {
                 None
